@@ -7,6 +7,13 @@ use crate::app_config::AppType;
 use crate::error::AppError;
 use crate::services::skill::{SkillStorageLocation, SyncMethod};
 
+pub const CODEX_TARGET_WINDOWS: &str = "windows";
+pub const CODEX_TARGET_WSL: &str = "wsl";
+
+fn default_codex_target() -> String {
+    CODEX_TARGET_WINDOWS.to_string()
+}
+
 /// 自定义端点配置（历史兼容，实际存储在 provider.meta.custom_endpoints）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -416,6 +423,16 @@ pub struct AppSettings {
     pub claude_config_dir: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub codex_config_dir: Option<String>,
+    /// Codex configuration directory used by the Windows Codex client.
+    /// The legacy `codex_config_dir` remains the active-directory compatibility field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codex_windows_config_dir: Option<String>,
+    /// Codex configuration directory used by the WSL Codex client.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codex_wsl_config_dir: Option<String>,
+    /// Active Codex target. Defaults to the Windows target for backwards compatibility.
+    #[serde(default = "default_codex_target")]
+    pub codex_active_target: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gemini_config_dir: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -439,6 +456,17 @@ pub struct AppSettings {
     /// 当前 Codex 供应商 ID（本地存储，优先于数据库 is_current）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_provider_codex: Option<String>,
+    /// Current provider for the Windows Codex target.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_provider_codex_windows: Option<String>,
+    /// Current provider for the WSL Codex target.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_provider_codex_wsl: Option<String>,
+    /// Provider slots saved while both Codex targets are under local routing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codex_proxy_windows_provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codex_proxy_wsl_provider: Option<String>,
     /// 当前 Gemini 供应商 ID（本地存储，优先于数据库 is_current）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_provider_gemini: Option<String>,
@@ -534,6 +562,9 @@ impl Default for AppSettings {
             visible_apps: None,
             claude_config_dir: None,
             codex_config_dir: None,
+            codex_windows_config_dir: None,
+            codex_wsl_config_dir: None,
+            codex_active_target: default_codex_target(),
             gemini_config_dir: None,
             grok_config_dir: None,
             opencode_config_dir: None,
@@ -543,6 +574,10 @@ impl Default for AppSettings {
             current_provider_claude: None,
             current_provider_claude_desktop: None,
             current_provider_codex: None,
+            current_provider_codex_windows: None,
+            current_provider_codex_wsl: None,
+            codex_proxy_windows_provider: None,
+            codex_proxy_wsl_provider: None,
             current_provider_gemini: None,
             current_provider_grokbuild: None,
             current_provider_opencode: None,
@@ -585,6 +620,47 @@ impl AppSettings {
             .map(|s| s.trim())
             .filter(|s| !s.is_empty())
             .map(|s| s.to_string());
+
+        self.codex_windows_config_dir = self
+            .codex_windows_config_dir
+            .as_ref()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
+
+        self.codex_wsl_config_dir = self
+            .codex_wsl_config_dir
+            .as_ref()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
+
+        if self.codex_active_target != CODEX_TARGET_WSL {
+            self.codex_active_target = CODEX_TARGET_WINDOWS.to_string();
+        } else if self.codex_wsl_config_dir.is_none() {
+            // A WSL target without an explicit root would silently fall back to
+            // the host's default ~/.codex directory and share auth/sessions
+            // with Windows. Keep the active target safe until the WSL root is
+            // configured.
+            self.codex_active_target = CODEX_TARGET_WINDOWS.to_string();
+        }
+
+        // Migrate the pre-target single-directory setting to Windows. Keep the
+        // legacy field synchronized because older frontends may still send it.
+        if self.codex_windows_config_dir.is_none()
+            && self.codex_active_target == CODEX_TARGET_WINDOWS
+        {
+            self.codex_windows_config_dir = self.codex_config_dir.clone();
+        }
+        if self.current_provider_codex_windows.is_none()
+            && self.codex_active_target == CODEX_TARGET_WINDOWS
+        {
+            self.current_provider_codex_windows = self.current_provider_codex.clone();
+        }
+        self.codex_config_dir = match self.codex_active_target.as_str() {
+            CODEX_TARGET_WSL => self.codex_wsl_config_dir.clone(),
+            _ => self.codex_windows_config_dir.clone(),
+        };
 
         self.gemini_config_dir = self
             .gemini_config_dir
@@ -908,10 +984,73 @@ pub fn get_claude_override_dir() -> Option<PathBuf> {
 
 pub fn get_codex_override_dir() -> Option<PathBuf> {
     let settings = settings_store().read().ok()?;
-    settings
-        .codex_config_dir
-        .as_ref()
-        .map(|p| resolve_override_path(p))
+    let path = match settings.codex_active_target.as_str() {
+        CODEX_TARGET_WSL => settings.codex_wsl_config_dir.as_ref(),
+        _ => settings.codex_windows_config_dir.as_ref(),
+    }?;
+    Some(resolve_override_path(path))
+}
+
+/// Return the configured directory for a Codex target without changing the
+/// active target. The legacy directory is treated as the Windows directory.
+pub fn get_codex_target_override_dir(target: &str) -> Option<PathBuf> {
+    let settings = settings_store().read().ok()?;
+    let path = match target {
+        CODEX_TARGET_WSL => settings.codex_wsl_config_dir.as_ref(),
+        CODEX_TARGET_WINDOWS => settings.codex_windows_config_dir.as_ref(),
+        _ => return None,
+    }?;
+    Some(resolve_override_path(path))
+}
+
+pub fn codex_active_target() -> String {
+    let settings = get_settings();
+    if settings.codex_active_target == CODEX_TARGET_WSL {
+        CODEX_TARGET_WSL.to_string()
+    } else {
+        CODEX_TARGET_WINDOWS.to_string()
+    }
+}
+
+pub fn set_codex_active_target(target: &str) -> Result<(), AppError> {
+    let target = match target {
+        CODEX_TARGET_WINDOWS | CODEX_TARGET_WSL => target,
+        _ => {
+            return Err(AppError::InvalidInput(format!(
+                "Unknown Codex target: {target}"
+            )))
+        }
+    };
+    if target == CODEX_TARGET_WSL && get_settings().codex_wsl_config_dir.is_none() {
+        return Err(AppError::InvalidInput(
+            "Configure a WSL Codex configuration directory before switching targets".to_string(),
+        ));
+    }
+    mutate_settings(|settings| {
+        settings.codex_active_target = target.to_string();
+        settings.codex_config_dir = match target {
+            CODEX_TARGET_WSL => settings.codex_wsl_config_dir.clone(),
+            _ => settings.codex_windows_config_dir.clone(),
+        };
+    })
+}
+
+pub fn set_codex_proxy_provider(target: &str, provider: Option<&str>) -> Result<(), AppError> {
+    let provider = provider.map(str::to_string);
+    mutate_settings(|settings| match target {
+        CODEX_TARGET_WSL => settings.codex_proxy_wsl_provider = provider.clone(),
+        CODEX_TARGET_WINDOWS => settings.codex_proxy_windows_provider = provider.clone(),
+        _ => {}
+    })
+}
+
+pub fn get_codex_proxy_provider(target: &str) -> Option<String> {
+    let settings = get_settings();
+    match target {
+        CODEX_TARGET_WSL => settings.codex_proxy_wsl_provider,
+        CODEX_TARGET_WINDOWS => settings.codex_proxy_windows_provider,
+        _ => None,
+    }
 }
 
 pub fn get_gemini_override_dir() -> Option<PathBuf> {
@@ -993,7 +1132,13 @@ pub fn get_current_provider(app_type: &AppType) -> Option<String> {
     match app_type {
         AppType::Claude => settings.current_provider_claude.clone(),
         AppType::ClaudeDesktop => settings.current_provider_claude_desktop.clone(),
-        AppType::Codex => settings.current_provider_codex.clone(),
+        AppType::Codex => match settings.codex_active_target.as_str() {
+            CODEX_TARGET_WSL => settings.current_provider_codex_wsl.clone(),
+            _ => settings
+                .current_provider_codex_windows
+                .clone()
+                .or(settings.current_provider_codex.clone()),
+        },
         AppType::Gemini => settings.current_provider_gemini.clone(),
         AppType::GrokBuild => settings.current_provider_grokbuild.clone(),
         AppType::OpenCode => settings.current_provider_opencode.clone(),
@@ -1012,7 +1157,14 @@ pub fn set_current_provider(app_type: &AppType, id: Option<&str>) -> Result<(), 
     mutate_settings(|settings| match app_type {
         AppType::Claude => settings.current_provider_claude = id_owned.clone(),
         AppType::ClaudeDesktop => settings.current_provider_claude_desktop = id_owned.clone(),
-        AppType::Codex => settings.current_provider_codex = id_owned.clone(),
+        AppType::Codex => {
+            settings.current_provider_codex = id_owned.clone();
+            if settings.codex_active_target == CODEX_TARGET_WSL {
+                settings.current_provider_codex_wsl = id_owned.clone();
+            } else {
+                settings.current_provider_codex_windows = id_owned.clone();
+            }
+        }
         AppType::Gemini => settings.current_provider_gemini = id_owned.clone(),
         AppType::GrokBuild => settings.current_provider_grokbuild = id_owned.clone(),
         AppType::OpenCode => settings.current_provider_opencode = id_owned.clone(),
@@ -1020,6 +1172,49 @@ pub fn set_current_provider(app_type: &AppType, id: Option<&str>) -> Result<(), 
         AppType::Hermes => settings.current_provider_hermes = id_owned.clone(),
         AppType::Pi => {}
     })
+}
+
+/// Read or write a Codex target's provider slot without changing the active
+/// filesystem target. This is used while local proxy takeover coordinates both
+/// Windows and WSL directories in one operation.
+pub fn get_current_provider_for_codex_target(target: &str) -> Option<String> {
+    let settings = settings_store().read().ok()?;
+    match target {
+        CODEX_TARGET_WSL => settings.current_provider_codex_wsl.clone(),
+        CODEX_TARGET_WINDOWS => settings.current_provider_codex_windows.clone(),
+        _ => None,
+    }
+}
+
+pub fn set_current_provider_for_codex_target(
+    target: &str,
+    id: Option<&str>,
+) -> Result<(), AppError> {
+    let id_owned = id.map(str::to_string);
+    mutate_settings(|settings| {
+        match target {
+            CODEX_TARGET_WSL => settings.current_provider_codex_wsl = id_owned.clone(),
+            CODEX_TARGET_WINDOWS => settings.current_provider_codex_windows = id_owned.clone(),
+            _ => return,
+        }
+        if settings.codex_active_target == target {
+            settings.current_provider_codex = id_owned.clone();
+        }
+    })
+}
+
+pub fn get_effective_current_provider_for_codex_target(
+    db: &crate::database::Database,
+    target: &str,
+) -> Result<Option<String>, AppError> {
+    if let Some(local_id) = get_current_provider_for_codex_target(target) {
+        let providers = db.get_all_providers(AppType::Codex.as_str())?;
+        if providers.contains_key(&local_id) {
+            return Ok(Some(local_id));
+        }
+        let _ = set_current_provider_for_codex_target(target, None);
+    }
+    db.get_current_provider(AppType::Codex.as_str())
 }
 
 /// 获取有效的当前供应商 ID（验证存在性）
@@ -1216,6 +1411,63 @@ mod tests {
         assert_eq!(
             resolve_override_path(r"~\pi\agent"),
             home.join("pi").join("agent")
+        );
+    }
+
+    #[test]
+    fn legacy_codex_directory_migrates_to_windows_target() {
+        let mut settings: AppSettings = serde_json::from_value(serde_json::json!({
+            "codexConfigDir": "~/windows-codex",
+            "currentProviderCodex": "windows-provider"
+        }))
+        .expect("legacy settings");
+        settings.normalize_paths();
+
+        assert_eq!(settings.codex_active_target, CODEX_TARGET_WINDOWS);
+        assert_eq!(
+            settings.codex_windows_config_dir.as_deref(),
+            Some("~/windows-codex")
+        );
+        assert_eq!(
+            settings.codex_config_dir.as_deref(),
+            Some("~/windows-codex")
+        );
+        assert_eq!(
+            settings.current_provider_codex_windows.as_deref(),
+            Some("windows-provider")
+        );
+    }
+
+    #[test]
+    fn codex_target_normalization_keeps_wsl_directory_separate() {
+        let mut settings: AppSettings = serde_json::from_value(serde_json::json!({
+            "codexWindowsConfigDir": "~/windows-codex",
+            "codexWslConfigDir": "~/wsl-codex",
+            "codexActiveTarget": "wsl"
+        }))
+        .expect("target settings");
+        settings.normalize_paths();
+
+        assert_eq!(settings.codex_config_dir.as_deref(), Some("~/wsl-codex"));
+        assert_eq!(
+            settings.codex_windows_config_dir.as_deref(),
+            Some("~/windows-codex")
+        );
+    }
+
+    #[test]
+    fn wsl_target_without_directory_falls_back_to_windows() {
+        let mut settings: AppSettings = serde_json::from_value(serde_json::json!({
+            "codexConfigDir": "~/windows-codex",
+            "codexActiveTarget": "wsl"
+        }))
+        .expect("target settings");
+        settings.normalize_paths();
+
+        assert_eq!(settings.codex_active_target, CODEX_TARGET_WINDOWS);
+        assert_eq!(
+            settings.codex_windows_config_dir.as_deref(),
+            Some("~/windows-codex")
         );
     }
 }

@@ -793,6 +793,8 @@
     "piConfigDirDescription": "覆寫 Pi 設定目錄（models.json、指示檔案、提示、Skills 與工作階段）。",
     "browsePlaceholderClaude": "例如：/home/<您的帳號>/.claude",
     "browsePlaceholderCodex": "例如：/home/<您的帳號>/.codex",
+    "codexWindowsConfigDir": "Codex Windows 設定目錄",
+    "codexWslConfigDir": "Codex WSL 設定目錄",
     "browsePlaceholderGemini": "例如：/home/<您的帳號>/.gemini",
     "browsePlaceholderGrok": "例如：/home/<您的帳號>/.grok",
     "browsePlaceholderOpencode": "例如：/home/<您的帳號>/.config/opencode",

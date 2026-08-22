@@ -202,6 +202,19 @@ function App() {
   }, [currentView]);
 
   const { data: settingsData } = useSettingsQuery();
+  const activeCodexTarget =
+    settingsData?.codexActiveTarget === "wsl" ? "wsl" : "windows";
+  const switchCodexTarget = async (target: "windows" | "wsl") => {
+    if (target === activeCodexTarget) return;
+    try {
+      await settingsApi.setCodexActiveTarget(target);
+      await queryClient.invalidateQueries({ queryKey: ["settings"] });
+      await queryClient.invalidateQueries({ queryKey: ["providers", "codex"] });
+      await queryClient.invalidateQueries({ queryKey: ["sessions"] });
+    } catch (error) {
+      toast.error(`切换 Codex 目标失败: ${extractErrorMessage(error)}`);
+    }
+  };
   const useAppWindowControls =
     isLinux() && (settingsData?.useAppWindowControls ?? false);
   const dragBarHeight = useAppWindowControls ? 32 : DEFAULT_DRAG_BAR_HEIGHT;
@@ -1397,6 +1410,39 @@ function App() {
                   <ProfileSwitcher activeApp={activeApp} />
                 </div>
               )}
+            {currentView === "providers" && activeApp === "codex" && (
+              <div
+                className="flex shrink-0 items-center rounded-md border border-border/70 p-0.5"
+                style={{ WebkitAppRegion: "no-drag" } as any}
+              >
+                <Button
+                  type="button"
+                  size="sm"
+                  variant={
+                    activeCodexTarget === "windows" ? "secondary" : "ghost"
+                  }
+                  className="h-7 px-2 text-xs"
+                  onClick={() => void switchCodexTarget("windows")}
+                >
+                  Windows
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant={activeCodexTarget === "wsl" ? "secondary" : "ghost"}
+                  className="h-7 px-2 text-xs"
+                  disabled={!settingsData?.codexWslConfigDir}
+                  title={
+                    settingsData?.codexWslConfigDir
+                      ? "WSL"
+                      : "请先在设置中配置 Codex WSL 配置目录"
+                  }
+                  onClick={() => void switchCodexTarget("wsl")}
+                >
+                  WSL
+                </Button>
+              </div>
+            )}
             {/* 弹性中段：空间不足时由 AppSwitcher 自行收纳溢出应用；
                 justify-end + overflow-hidden 只裁剪 resize 瞬间的过渡帧 */}
             <div className="flex flex-1 min-w-0 items-center justify-end overflow-hidden py-4">

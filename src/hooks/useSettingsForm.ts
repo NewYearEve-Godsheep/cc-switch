@@ -121,6 +121,11 @@ export function useSettingsForm(): UseSettingsFormResult {
       unifyCodexSessionHistory: data.unifyCodexSessionHistory ?? false,
       claudeConfigDir: sanitizeDir(data.claudeConfigDir),
       codexConfigDir: sanitizeDir(data.codexConfigDir),
+      codexWindowsConfigDir: sanitizeDir(
+        data.codexWindowsConfigDir ?? data.codexConfigDir,
+      ),
+      codexWslConfigDir: sanitizeDir(data.codexWslConfigDir),
+      codexActiveTarget: data.codexActiveTarget === "wsl" ? "wsl" : "windows",
       geminiConfigDir: sanitizeDir(data.geminiConfigDir),
       grokConfigDir: sanitizeDir(data.grokConfigDir),
       opencodeConfigDir: sanitizeDir(data.opencodeConfigDir),
@@ -189,6 +194,12 @@ export function useSettingsForm(): UseSettingsFormResult {
         unifyCodexSessionHistory: serverData.unifyCodexSessionHistory ?? false,
         claudeConfigDir: sanitizeDir(serverData.claudeConfigDir),
         codexConfigDir: sanitizeDir(serverData.codexConfigDir),
+        codexWindowsConfigDir: sanitizeDir(
+          serverData.codexWindowsConfigDir ?? serverData.codexConfigDir,
+        ),
+        codexWslConfigDir: sanitizeDir(serverData.codexWslConfigDir),
+        codexActiveTarget:
+          serverData.codexActiveTarget === "wsl" ? "wsl" : "windows",
         geminiConfigDir: sanitizeDir(serverData.geminiConfigDir),
         grokConfigDir: sanitizeDir(serverData.grokConfigDir),
         opencodeConfigDir: sanitizeDir(serverData.opencodeConfigDir),

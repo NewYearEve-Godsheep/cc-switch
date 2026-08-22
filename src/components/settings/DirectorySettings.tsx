@@ -6,7 +6,10 @@ import { useTranslation } from "react-i18next";
 import type { AppId } from "@/lib/api";
 import type { ResolvedDirectories } from "@/hooks/useSettings";
 
-type DirectoryAppId = Exclude<AppId, "claude-desktop">;
+type DirectoryAppId =
+  | Exclude<AppId, "claude-desktop">
+  | "codex-windows"
+  | "codex-wsl";
 
 interface DirectorySettingsProps {
   appConfigDir?: string;
@@ -15,7 +18,8 @@ interface DirectorySettingsProps {
   onBrowseAppConfig: () => Promise<void>;
   onResetAppConfig: () => Promise<void>;
   claudeDir?: string;
-  codexDir?: string;
+  codexWindowsDir?: string;
+  codexWslDir?: string;
   geminiDir?: string;
   grokDir?: string;
   opencodeDir?: string;
@@ -34,7 +38,8 @@ export function DirectorySettings({
   onBrowseAppConfig,
   onResetAppConfig,
   claudeDir,
-  codexDir,
+  codexWindowsDir,
+  codexWslDir,
   geminiDir,
   grokDir,
   opencodeDir,
@@ -109,14 +114,25 @@ export function DirectorySettings({
         />
 
         <DirectoryInput
-          label={t("settings.codexConfigDir")}
+          label={t("settings.codexWindowsConfigDir", "Codex Windows 配置目录")}
           description={undefined}
-          value={codexDir}
-          resolvedValue={resolvedDirs.codex}
+          value={codexWindowsDir}
+          resolvedValue={resolvedDirs.codexWindows}
           placeholder={t("settings.browsePlaceholderCodex")}
-          onChange={(val) => onDirectoryChange("codex", val)}
-          onBrowse={() => onBrowseDirectory("codex")}
-          onReset={() => onResetDirectory("codex")}
+          onChange={(val) => onDirectoryChange("codex-windows", val)}
+          onBrowse={() => onBrowseDirectory("codex-windows")}
+          onReset={() => onResetDirectory("codex-windows")}
+        />
+
+        <DirectoryInput
+          label={t("settings.codexWslConfigDir", "Codex WSL 配置目录")}
+          description={undefined}
+          value={codexWslDir}
+          resolvedValue={resolvedDirs.codexWsl}
+          placeholder={t("settings.browsePlaceholderCodex")}
+          onChange={(val) => onDirectoryChange("codex-wsl", val)}
+          onBrowse={() => onBrowseDirectory("codex-wsl")}
+          onReset={() => onResetDirectory("codex-wsl")}
         />
 
         <DirectoryInput

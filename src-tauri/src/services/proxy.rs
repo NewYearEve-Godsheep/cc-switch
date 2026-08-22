@@ -716,6 +716,40 @@ impl ProxyService {
             .await
     }
 
+    pub(crate) async fn sync_codex_live_from_provider_while_proxy_active_for_targets(
+        &self,
+        provider: &Provider,
+    ) -> Result<(), String> {
+        self.sync_codex_live_from_provider_while_proxy_active_for_targets_guarded(
+            provider, None, None,
+        )
+        .await
+    }
+
+    pub(crate) async fn sync_codex_live_from_provider_while_proxy_active_for_targets_guarded(
+        &self,
+        provider: &Provider,
+        outgoing_managed_account_id: Option<&str>,
+        expected_outgoing_refresh_token: Option<&str>,
+    ) -> Result<(), String> {
+        let original_target = crate::settings::codex_active_target();
+        let result = async {
+            for target in self.codex_targets().await {
+                crate::settings::set_codex_active_target(&target).map_err(|e| e.to_string())?;
+                self.sync_codex_live_from_provider_while_proxy_active_guarded(
+                    provider,
+                    outgoing_managed_account_id,
+                    expected_outgoing_refresh_token,
+                )
+                .await?;
+            }
+            Ok::<(), String>(())
+        }
+        .await;
+        crate::settings::set_codex_active_target(&original_target).map_err(|e| e.to_string())?;
+        result
+    }
+
     pub(crate) async fn sync_codex_live_from_provider_while_proxy_active_guarded(
         &self,
         provider: &Provider,
@@ -859,9 +893,32 @@ impl ProxyService {
 
         let rollback_result = match previous_backup {
             Some(backup) => {
-                self.db
-                    .save_live_backup(app_type.as_str(), &backup.original_config)
-                    .await
+                if matches!(app_type, AppType::Codex)
+                    && crate::settings::get_codex_target_override_dir(
+                        crate::settings::CODEX_TARGET_WSL,
+                    )
+                    .is_some()
+                {
+                    let original_target = crate::settings::codex_active_target();
+                    let result = async {
+                        for target in self.codex_targets().await {
+                            crate::settings::set_codex_active_target(&target)
+                                .map_err(|e| crate::error::AppError::Message(e.to_string()))?;
+                            self.db
+                                .save_live_backup(app_type.as_str(), &backup.original_config)
+                                .await?;
+                        }
+                        Ok::<(), crate::error::AppError>(())
+                    }
+                    .await;
+                    let restore_target = crate::settings::set_codex_active_target(&original_target)
+                        .map_err(|e| crate::error::AppError::Message(e.to_string()));
+                    result.and(restore_target)
+                } else {
+                    self.db
+                        .save_live_backup(app_type.as_str(), &backup.original_config)
+                        .await
+                }
             }
             None => self.db.delete_live_backup(app_type.as_str()).await,
         };
@@ -1142,6 +1199,147 @@ impl ProxyService {
     /// - 开启：自动启动代理服务，仅接管当前 app 的 Live 配置
     /// - 关闭：仅恢复当前 app 的 Live 配置；若无其它接管，则自动停止代理服务
     pub async fn set_takeover_for_app(&self, app_type: &str, enabled: bool) -> Result<(), String> {
+        let app = AppType::from_str(app_type).map_err(|e| format!("无效的应用类型: {e}"))?;
+        if matches!(app, AppType::Codex) {
+            return self.set_codex_takeover_for_targets(enabled).await;
+        }
+        self.set_takeover_for_app_single(app_type, enabled).await
+    }
+
+    /// Apply one proxy takeover transition to both configured Codex Live
+    /// directories. The proxy itself remains a single endpoint; only the
+    /// client-side config/auth/session roots are switched while each target is
+    /// processed. Target-specific backup keys are selected by the database DAO.
+    async fn set_codex_takeover_for_targets(&self, enabled: bool) -> Result<(), String> {
+        let original_target = crate::settings::codex_active_target();
+        let mut targets = vec![crate::settings::CODEX_TARGET_WINDOWS.to_string()];
+        if crate::settings::get_codex_target_override_dir(crate::settings::CODEX_TARGET_WSL)
+            .is_some()
+        {
+            targets.push(crate::settings::CODEX_TARGET_WSL.to_string());
+        }
+
+        // Local routing deliberately uses one provider for both clients. Pick
+        // the active target first, then fall back to the other target/DB slot.
+        let common_provider = if enabled {
+            crate::settings::get_effective_current_provider_for_codex_target(
+                &self.db,
+                &original_target,
+            )
+            .map_err(|e| e.to_string())?
+            .or_else(|| {
+                targets.iter().find_map(|target| {
+                    crate::settings::get_effective_current_provider_for_codex_target(
+                        &self.db, target,
+                    )
+                    .ok()
+                    .flatten()
+                })
+            })
+        } else {
+            None
+        };
+
+        let mut processed = Vec::new();
+        for target in &targets {
+            crate::settings::set_codex_active_target(target).map_err(|e| e.to_string())?;
+            if !enabled {
+                // The app-level enabled bit is shared by both target rows. The
+                // first restore clears it, so re-arm it before restoring the
+                // next target; the final state is cleared by the inner call.
+                if target != targets.first().expect("Codex targets is non-empty") {
+                    let mut config = self
+                        .db
+                        .get_proxy_config_for_app("codex")
+                        .await
+                        .map_err(|e| format!("获取 codex 配置失败: {e}"))?;
+                    config.enabled = true;
+                    self.db
+                        .update_proxy_config_for_app(config)
+                        .await
+                        .map_err(|e| format!("准备恢复 codex 配置失败: {e}"))?;
+                }
+            }
+            if enabled {
+                let previous = crate::settings::get_current_provider_for_codex_target(target);
+                if crate::settings::get_codex_proxy_provider(target).is_none() {
+                    crate::settings::set_codex_proxy_provider(target, previous.as_deref())
+                        .map_err(|e| e.to_string())?;
+                }
+                if let Some(provider_id) = common_provider.as_deref() {
+                    crate::settings::set_current_provider_for_codex_target(
+                        target,
+                        Some(provider_id),
+                    )
+                    .map_err(|e| e.to_string())?;
+                }
+            }
+
+            match self.set_takeover_for_app_single("codex", enabled).await {
+                Ok(()) => processed.push(target.clone()),
+                Err(error) => {
+                    // Best effort rollback for targets already transitioned.
+                    if enabled {
+                        for done in processed.iter().rev() {
+                            let _ = crate::settings::set_codex_active_target(done);
+                            let _ = self.set_takeover_for_app_single("codex", false).await;
+                        }
+                        // The provider slot is reserved before the inner
+                        // takeover call, so also clean the slot for the target
+                        // whose activation failed and restore every target's
+                        // pre-route provider selection.
+                        for rollback_target in &targets {
+                            let _ = crate::settings::set_codex_active_target(rollback_target);
+                            let previous =
+                                crate::settings::get_codex_proxy_provider(rollback_target);
+                            let _ = crate::settings::set_current_provider_for_codex_target(
+                                rollback_target,
+                                previous.as_deref(),
+                            );
+                            let _ =
+                                crate::settings::set_codex_proxy_provider(rollback_target, None);
+                        }
+                    } else {
+                        // A shared proxy_config.enabled flag is toggled by each
+                        // single-target transition. If a later restore fails,
+                        // re-take over every target so we do not leave one
+                        // target routed and another target restored while
+                        // reporting a failed operation.
+                        for rollback_target in targets.iter() {
+                            let _ = crate::settings::set_codex_active_target(rollback_target);
+                            if let Err(rollback_error) =
+                                self.set_takeover_for_app_single("codex", true).await
+                            {
+                                log::error!(
+                                    "恢复 Codex/{rollback_target} 接管状态失败: {rollback_error}"
+                                );
+                            }
+                        }
+                    }
+                    let _ = crate::settings::set_codex_active_target(&original_target);
+                    return Err(error);
+                }
+            }
+        }
+
+        if !enabled {
+            for target in &targets {
+                let previous = crate::settings::get_codex_proxy_provider(target);
+                crate::settings::set_current_provider_for_codex_target(target, previous.as_deref())
+                    .map_err(|e| e.to_string())?;
+                crate::settings::set_codex_proxy_provider(target, None)
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+        crate::settings::set_codex_active_target(&original_target).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    async fn set_takeover_for_app_single(
+        &self,
+        app_type: &str,
+        enabled: bool,
+    ) -> Result<(), String> {
         let app = AppType::from_str(app_type).map_err(|e| format!("无效的应用类型: {e}"))?;
         if !app.supports_local_proxy() {
             return Err(format!("{} 不支持本地路由", app.as_str()));
@@ -1691,10 +1889,24 @@ impl ProxyService {
                 .await?;
         }
 
-        if let Ok(live_config) = self.read_codex_live() {
-            self.sync_live_config_to_provider(&AppType::Codex, &live_config)
-                .await?;
+        // Codex Windows and WSL roots have independent auth.json files. Sync
+        // each root while it is active so enabling local routing never loses a
+        // credential that only exists in the other client.
+        let original_codex_target = crate::settings::codex_active_target();
+        let codex_sync_result = async {
+            for target in self.codex_targets().await {
+                crate::settings::set_codex_active_target(&target).map_err(|e| e.to_string())?;
+                if let Ok(live_config) = self.read_codex_live() {
+                    self.sync_live_config_to_provider(&AppType::Codex, &live_config)
+                        .await?;
+                }
+            }
+            Ok::<(), String>(())
         }
+        .await;
+        crate::settings::set_codex_active_target(&original_codex_target)
+            .map_err(|e| e.to_string())?;
+        codex_sync_result?;
 
         if let Ok(live_config) = self.read_gemini_live() {
             self.sync_live_config_to_provider(&AppType::Gemini, &live_config)
@@ -1841,20 +2053,7 @@ impl ProxyService {
             }
         }
 
-        // Codex
-        if let Ok(mut config) = self.read_codex_live() {
-            if Self::live_has_proxy_placeholder_for_app(&AppType::Codex, &config) {
-                log::warn!("codex Live 已被代理接管，不备份（避免把代理配置固化进备份槽）；下次 stop 会从 SSOT 重建 Live");
-            } else {
-                self.strip_current_official_codex_auth_from_backup(&mut config)?;
-                let json_str = serde_json::to_string(&config)
-                    .map_err(|e| format!("序列化 Codex 配置失败: {e}"))?;
-                self.db
-                    .save_live_backup("codex", &json_str)
-                    .await
-                    .map_err(|e| format!("备份 Codex 配置失败: {e}"))?;
-            }
-        }
+        self.backup_codex_live_targets().await?;
 
         // Gemini
         if let Ok(config) = self.read_gemini_live() {
@@ -1886,6 +2085,42 @@ impl ProxyService {
 
         log::info!("已备份所有应用的 Live 配置");
         Ok(())
+    }
+
+    async fn codex_targets(&self) -> Vec<String> {
+        let mut targets = vec![crate::settings::CODEX_TARGET_WINDOWS.to_string()];
+        if crate::settings::get_codex_target_override_dir(crate::settings::CODEX_TARGET_WSL)
+            .is_some()
+        {
+            targets.push(crate::settings::CODEX_TARGET_WSL.to_string());
+        }
+        targets
+    }
+
+    async fn backup_codex_live_targets(&self) -> Result<(), String> {
+        let original_target = crate::settings::codex_active_target();
+        let result = async {
+            for target in self.codex_targets().await {
+                crate::settings::set_codex_active_target(&target).map_err(|e| e.to_string())?;
+                if let Ok(mut config) = self.read_codex_live() {
+                    if Self::live_has_proxy_placeholder_for_app(&AppType::Codex, &config) {
+                        log::warn!("codex/{target} Live 已被代理接管，不备份（避免把代理配置固化进备份槽）");
+                    } else {
+                        self.strip_current_official_codex_auth_from_backup(&mut config)?;
+                        let json_str = serde_json::to_string(&config)
+                            .map_err(|e| format!("序列化 Codex 配置失败: {e}"))?;
+                        self.db
+                            .save_live_backup("codex", &json_str)
+                            .await
+                            .map_err(|e| format!("备份 Codex/{target} 配置失败: {e}"))?;
+                    }
+                }
+            }
+            Ok::<(), String>(())
+        }
+        .await;
+        crate::settings::set_codex_active_target(&original_target).map_err(|e| e.to_string())?;
+        result
     }
 
     /// 备份指定应用的 Live 配置（严格模式：目标配置不存在则返回错误）
@@ -2016,13 +2251,10 @@ impl ProxyService {
             log::info!("Claude Live 配置已接管，代理地址: {proxy_url}");
         }
 
-        // Codex: project the selected provider through the local Responses endpoint.
-        if self.read_codex_live().is_ok() {
-            let codex_provider = self.require_current_provider_for_app(&AppType::Codex)?;
-            self.sync_codex_live_from_provider_while_proxy_active(&codex_provider)
-                .await?;
-            log::info!("Codex Live 配置已接管，代理地址: {proxy_codex_base_url}");
-        }
+        // Codex: project one selected provider through the local Responses
+        // endpoint into every configured target directory.
+        self.takeover_codex_live_targets().await?;
+        log::info!("Codex Live 配置已接管，代理地址: {proxy_codex_base_url}");
 
         // Gemini: 修改 GOOGLE_GEMINI_BASE_URL，使用占位符替代真实 Token（代理会注入真实 Token）
         if let Ok(mut live_config) = self.read_gemini_live() {
@@ -2052,6 +2284,41 @@ impl ProxyService {
         }
 
         Ok(())
+    }
+
+    async fn takeover_codex_live_targets(&self) -> Result<(), String> {
+        let original_target = crate::settings::codex_active_target();
+        let provider_id = crate::settings::get_effective_current_provider_for_codex_target(
+            &self.db,
+            &original_target,
+        )
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "Codex 当前供应商不存在，无法接管 Live 配置".to_string())?;
+        let provider = self
+            .db
+            .get_provider_by_id(&provider_id, AppType::Codex.as_str())
+            .map_err(|e| format!("读取 Codex 供应商失败: {e}"))?
+            .ok_or_else(|| format!("Codex 供应商不存在: {provider_id}"))?;
+        let result = async {
+            for target in self.codex_targets().await {
+                crate::settings::set_codex_active_target(&target).map_err(|e| e.to_string())?;
+                if crate::settings::get_codex_proxy_provider(&target).is_none() {
+                    let previous = crate::settings::get_current_provider_for_codex_target(&target);
+                    crate::settings::set_codex_proxy_provider(&target, previous.as_deref())
+                        .map_err(|e| e.to_string())?;
+                }
+                crate::settings::set_current_provider_for_codex_target(&target, Some(&provider.id))
+                    .map_err(|e| e.to_string())?;
+                if self.read_codex_live().is_ok() {
+                    self.sync_codex_live_from_provider_while_proxy_active(&provider)
+                        .await?;
+                }
+            }
+            Ok::<(), String>(())
+        }
+        .await;
+        crate::settings::set_codex_active_target(&original_target).map_err(|e| e.to_string())?;
+        result
     }
 
     /// 接管指定应用的 Live 配置（严格模式：目标配置不存在则返回错误）
@@ -2145,10 +2412,8 @@ impl ProxyService {
                     let _ = self.write_claude_live(&live_config);
                 }
             }
-            AppType::Codex if self.read_codex_live().is_ok() => {
-                let codex_provider = self.require_current_provider_for_app(&AppType::Codex)?;
-                self.sync_codex_live_from_provider_while_proxy_active(&codex_provider)
-                    .await?;
+            AppType::Codex => {
+                self.takeover_codex_live_targets().await?;
             }
             AppType::Gemini => {
                 if let Ok(mut live_config) = self.read_gemini_live() {
@@ -2208,7 +2473,11 @@ impl ProxyService {
             return Ok(false);
         }
 
-        self.takeover_live_config_best_effort(app_type).await?;
+        if matches!(app_type, AppType::Codex) {
+            self.takeover_codex_live_targets().await?;
+        } else {
+            self.takeover_live_config_best_effort(app_type).await?;
+        }
         Ok(true)
     }
 
@@ -2256,18 +2525,38 @@ impl ProxyService {
     async fn restore_live_configs(&self) -> Result<(), String> {
         let mut errors = Vec::new();
 
-        for app_type in [
-            AppType::Claude,
-            AppType::Codex,
-            AppType::Gemini,
-            AppType::GrokBuild,
-        ] {
+        for app_type in [AppType::Claude, AppType::Gemini, AppType::GrokBuild] {
             if let Err(e) = self
                 .restore_live_config_for_app_with_fallback(&app_type)
                 .await
             {
                 errors.push(e);
             }
+        }
+
+        // Codex may have two independent Live roots under takeover. Restore
+        // both roots even when the UI currently points at only one target.
+        let original_target = crate::settings::codex_active_target();
+        let mut codex_targets = vec![crate::settings::CODEX_TARGET_WINDOWS.to_string()];
+        if crate::settings::get_codex_target_override_dir(crate::settings::CODEX_TARGET_WSL)
+            .is_some()
+        {
+            codex_targets.push(crate::settings::CODEX_TARGET_WSL.to_string());
+        }
+        for target in codex_targets {
+            if let Err(e) = crate::settings::set_codex_active_target(&target) {
+                errors.push(format!("切换 Codex {target} 目标失败: {e}"));
+                continue;
+            }
+            if let Err(e) = self
+                .restore_live_config_for_app_with_fallback(&AppType::Codex)
+                .await
+            {
+                errors.push(e);
+            }
+        }
+        if let Err(e) = crate::settings::set_codex_active_target(&original_target) {
+            errors.push(format!("恢复 Codex 活动目标失败: {e}"));
         }
 
         if errors.is_empty() {
@@ -2797,6 +3086,41 @@ impl ProxyService {
             .await
     }
 
+    pub(crate) async fn update_codex_live_backup_from_provider_for_targets(
+        &self,
+        provider: &Provider,
+    ) -> Result<(), String> {
+        let _guard = self
+            .switch_locks
+            .lock_for_app(AppType::Codex.as_str())
+            .await;
+        self.update_codex_live_backup_from_provider_for_targets_inner(provider, None)
+            .await
+    }
+
+    pub(crate) async fn update_codex_live_backup_from_provider_for_targets_inner(
+        &self,
+        provider: &Provider,
+        clear_codex_auth_for_account: Option<&str>,
+    ) -> Result<(), String> {
+        let original_target = crate::settings::codex_active_target();
+        let result = async {
+            for target in self.codex_targets().await {
+                crate::settings::set_codex_active_target(&target).map_err(|e| e.to_string())?;
+                self.update_live_backup_from_provider_inner(
+                    AppType::Codex.as_str(),
+                    provider,
+                    clear_codex_auth_for_account,
+                )
+                .await?;
+            }
+            Ok::<(), String>(())
+        }
+        .await;
+        crate::settings::set_codex_active_target(&original_target).map_err(|e| e.to_string())?;
+        result
+    }
+
     /// 仅供已持有 per-app 切换锁的调用方使用。
     pub(crate) async fn update_live_backup_from_provider_inner(
         &self,
@@ -2943,6 +3267,61 @@ impl ProxyService {
     ) -> Result<HotSwitchOutcome, String> {
         let _guard = self.switch_locks.lock_for_app(app_type).await;
         self.hot_switch_provider_inner(app_type, provider_id).await
+    }
+
+    /// Hot-switch a routed Codex provider in every configured target. The
+    /// caller already holds the app switch lock from ProviderService::switch;
+    /// this method intentionally calls the inner transition to avoid locking
+    /// the same mutex twice.
+    pub(crate) async fn hot_switch_codex_provider_for_targets(
+        &self,
+        provider_id: &str,
+    ) -> Result<(), String> {
+        let original_target = crate::settings::codex_active_target();
+        let targets = self.codex_targets().await;
+        let previous_providers: Vec<(String, Option<String>)> = targets
+            .iter()
+            .map(|target| {
+                let previous = crate::settings::get_effective_current_provider_for_codex_target(
+                    &self.db, target,
+                )
+                .ok()
+                .flatten();
+                (target.clone(), previous)
+            })
+            .collect();
+        let result = async {
+            for target in &targets {
+                crate::settings::set_codex_active_target(target).map_err(|e| e.to_string())?;
+                self.hot_switch_provider_inner(AppType::Codex.as_str(), provider_id)
+                    .await
+                    .map(|_| ())?;
+            }
+            Ok::<(), String>(())
+        }
+        .await;
+        if let Err(error) = &result {
+            // A target switch commits the shared DB current-provider field, so
+            // a later target can fail after an earlier one has already moved.
+            // Replay the prior target selections in reverse order to make the
+            // multi-target operation atomic from the user's perspective.
+            for (target, previous) in previous_providers.iter().rev() {
+                let Some(previous) = previous.as_deref() else {
+                    continue;
+                };
+                let _ = crate::settings::set_codex_active_target(target);
+                if let Err(rollback_error) = self
+                    .hot_switch_provider_inner(AppType::Codex.as_str(), previous)
+                    .await
+                {
+                    log::error!(
+                        "回滚 Codex/{target} 供应商失败（原操作错误: {error}）: {rollback_error}"
+                    );
+                }
+            }
+        }
+        crate::settings::set_codex_active_target(&original_target).map_err(|e| e.to_string())?;
+        result
     }
 
     pub(crate) async fn hot_switch_provider_inner(

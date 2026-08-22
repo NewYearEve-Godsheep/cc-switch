@@ -113,6 +113,10 @@ export function useSettings(): UseSettingsResult {
     resetAllDirectories({
       claude: sanitizeDir(data?.claudeConfigDir),
       codex: sanitizeDir(data?.codexConfigDir),
+      codexWindows: sanitizeDir(
+        data?.codexWindowsConfigDir ?? data?.codexConfigDir,
+      ),
+      codexWsl: sanitizeDir(data?.codexWslConfigDir),
       gemini: sanitizeDir(data?.geminiConfigDir),
       grokbuild: sanitizeDir(data?.grokConfigDir),
       opencode: sanitizeDir(data?.opencodeConfigDir),
@@ -192,6 +196,13 @@ export function useSettings(): UseSettingsResult {
       try {
         const sanitizedClaudeDir = sanitizeDir(mergedSettings.claudeConfigDir);
         const sanitizedCodexDir = sanitizeDir(mergedSettings.codexConfigDir);
+        const sanitizedCodexWindowsDir = sanitizeDir(
+          mergedSettings.codexWindowsConfigDir ??
+            (mergedSettings.codexWslConfigDir ? undefined : sanitizedCodexDir),
+        );
+        const sanitizedCodexWslDir = sanitizeDir(
+          mergedSettings.codexWslConfigDir,
+        );
         const sanitizedGeminiDir = sanitizeDir(mergedSettings.geminiConfigDir);
         const sanitizedGrokDir = sanitizeDir(mergedSettings.grokConfigDir);
         const sanitizedOpencodeDir = sanitizeDir(
@@ -210,7 +221,14 @@ export function useSettings(): UseSettingsResult {
         const payload: Settings = {
           ...restSettings,
           claudeConfigDir: sanitizedClaudeDir,
-          codexConfigDir: sanitizedCodexDir,
+          // Keep the legacy field as the Windows compatibility directory. The
+          // active WSL directory is represented by codexWslConfigDir and must
+          // not leak back into older save payloads.
+          codexConfigDir: sanitizedCodexWindowsDir,
+          codexWindowsConfigDir: sanitizedCodexWindowsDir,
+          codexWslConfigDir: sanitizedCodexWslDir,
+          codexActiveTarget:
+            mergedSettings.codexActiveTarget === "wsl" ? "wsl" : "windows",
           geminiConfigDir: sanitizedGeminiDir,
           grokConfigDir: sanitizedGrokDir,
           opencodeConfigDir: sanitizedOpencodeDir,
@@ -327,6 +345,13 @@ export function useSettings(): UseSettingsResult {
         const sanitizedAppDir = sanitizeDir(appConfigDir);
         const sanitizedClaudeDir = sanitizeDir(mergedSettings.claudeConfigDir);
         const sanitizedCodexDir = sanitizeDir(mergedSettings.codexConfigDir);
+        const sanitizedCodexWindowsDir = sanitizeDir(
+          mergedSettings.codexWindowsConfigDir ??
+            (mergedSettings.codexWslConfigDir ? undefined : sanitizedCodexDir),
+        );
+        const sanitizedCodexWslDir = sanitizeDir(
+          mergedSettings.codexWslConfigDir,
+        );
         const sanitizedGeminiDir = sanitizeDir(mergedSettings.geminiConfigDir);
         const sanitizedGrokDir = sanitizeDir(mergedSettings.grokConfigDir);
         const sanitizedOpencodeDir = sanitizeDir(
@@ -338,7 +363,10 @@ export function useSettings(): UseSettingsResult {
         const sanitizedPiDir = sanitizeDir(mergedSettings.piConfigDir);
         const previousAppDir = initialAppConfigDir;
         const previousClaudeDir = sanitizeDir(data?.claudeConfigDir);
-        const previousCodexDir = sanitizeDir(data?.codexConfigDir);
+        const previousCodexWindowsDir = sanitizeDir(
+          data?.codexWindowsConfigDir ?? data?.codexConfigDir,
+        );
+        const previousCodexWslDir = sanitizeDir(data?.codexWslConfigDir);
         const previousGeminiDir = sanitizeDir(data?.geminiConfigDir);
         const previousGrokDir = sanitizeDir(data?.grokConfigDir);
         const previousOpencodeDir = sanitizeDir(data?.opencodeConfigDir);
@@ -353,7 +381,11 @@ export function useSettings(): UseSettingsResult {
         const payload: Settings = {
           ...restSettings,
           claudeConfigDir: sanitizedClaudeDir,
-          codexConfigDir: sanitizedCodexDir,
+          codexConfigDir: sanitizedCodexWindowsDir,
+          codexWindowsConfigDir: sanitizedCodexWindowsDir,
+          codexWslConfigDir: sanitizedCodexWslDir,
+          codexActiveTarget:
+            mergedSettings.codexActiveTarget === "wsl" ? "wsl" : "windows",
           geminiConfigDir: sanitizedGeminiDir,
           grokConfigDir: sanitizedGrokDir,
           opencodeConfigDir: sanitizedOpencodeDir,
@@ -441,7 +473,9 @@ export function useSettings(): UseSettingsResult {
         // 任一 app 的目录覆盖发生变化后，立即把当前状态投影到新的 live 目录。
         // 如果插件同步已经执行过 syncCurrentProvidersLiveSafe，则跳过避免重复
         const claudeDirChanged = sanitizedClaudeDir !== previousClaudeDir;
-        const codexDirChanged = sanitizedCodexDir !== previousCodexDir;
+        const codexDirChanged =
+          sanitizedCodexWindowsDir !== previousCodexWindowsDir ||
+          sanitizedCodexWslDir !== previousCodexWslDir;
         const geminiDirChanged = sanitizedGeminiDir !== previousGeminiDir;
         const grokDirChanged = sanitizedGrokDir !== previousGrokDir;
         const opencodeDirChanged = sanitizedOpencodeDir !== previousOpencodeDir;

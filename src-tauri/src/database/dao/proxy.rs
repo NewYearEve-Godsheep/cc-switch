@@ -775,6 +775,17 @@ impl Database {
 
     // ==================== Live Backup ====================
 
+    /// Codex has two independently addressable Live directories. Keep the
+    /// legacy `codex` row readable for older databases, but write new backups
+    /// under the active target so the two restore generations never collide.
+    fn live_backup_key(app_type: &str) -> String {
+        if app_type == "codex" {
+            format!("codex-{}", crate::settings::codex_active_target())
+        } else {
+            app_type.to_string()
+        }
+    }
+
     /// 保存 Live 配置备份
     pub async fn save_live_backup(
         &self,
@@ -783,11 +794,12 @@ impl Database {
     ) -> Result<(), AppError> {
         let conn = lock_conn!(self.conn);
         let now = chrono::Utc::now().to_rfc3339();
+        let backup_key = Self::live_backup_key(app_type);
 
         conn.execute(
             "INSERT OR REPLACE INTO proxy_live_backup (app_type, original_config, backed_up_at)
              VALUES (?1, ?2, ?3)",
-            rusqlite::params![app_type, config_json, now],
+            rusqlite::params![backup_key, config_json, now],
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
 
@@ -809,10 +821,11 @@ impl Database {
     /// 获取 Live 配置备份
     pub async fn get_live_backup(&self, app_type: &str) -> Result<Option<LiveBackup>, AppError> {
         let conn = lock_conn!(self.conn);
+        let backup_key = Self::live_backup_key(app_type);
 
         let result = conn.query_row(
             "SELECT app_type, original_config, backed_up_at FROM proxy_live_backup WHERE app_type = ?1",
-            rusqlite::params![app_type],
+            rusqlite::params![backup_key],
             |row| {
                 Ok(LiveBackup {
                     app_type: row.get(0)?,
@@ -824,6 +837,30 @@ impl Database {
 
         match result {
             Ok(backup) => Ok(Some(backup)),
+            Err(rusqlite::Error::QueryReturnedNoRows)
+                if app_type == "codex"
+                    && crate::settings::codex_active_target()
+                        == crate::settings::CODEX_TARGET_WINDOWS =>
+            {
+                // One-time compatibility fallback for databases created before
+                // target-aware Codex backups existed.
+                let legacy = conn.query_row(
+                    "SELECT app_type, original_config, backed_up_at FROM proxy_live_backup WHERE app_type = 'codex'",
+                    [],
+                    |row| {
+                        Ok(LiveBackup {
+                            app_type: row.get(0)?,
+                            original_config: row.get(1)?,
+                            backed_up_at: row.get(2)?,
+                        })
+                    },
+                );
+                match legacy {
+                    Ok(backup) => Ok(Some(backup)),
+                    Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+                    Err(e) => Err(AppError::Database(e.to_string())),
+                }
+            }
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
             Err(e) => Err(AppError::Database(e.to_string())),
         }
@@ -832,12 +869,21 @@ impl Database {
     /// 删除 Live 配置备份
     pub async fn delete_live_backup(&self, app_type: &str) -> Result<(), AppError> {
         let conn = lock_conn!(self.conn);
+        let backup_key = Self::live_backup_key(app_type);
 
         conn.execute(
             "DELETE FROM proxy_live_backup WHERE app_type = ?1",
-            rusqlite::params![app_type],
+            rusqlite::params![backup_key],
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
+
+        if app_type == "codex"
+            && crate::settings::codex_active_target() == crate::settings::CODEX_TARGET_WINDOWS
+        {
+            // Remove the legacy row once the Windows target has been restored.
+            conn.execute("DELETE FROM proxy_live_backup WHERE app_type = 'codex'", [])
+                .map_err(|e| AppError::Database(e.to_string()))?;
+        }
 
         log::info!("已删除 {app_type} Live 配置备份");
         Ok(())

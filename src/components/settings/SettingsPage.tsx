@@ -350,7 +350,8 @@ export function SettingsPage({
                             onBrowseAppConfig={browseAppConfigDir}
                             onResetAppConfig={resetAppConfigDir}
                             claudeDir={settings.claudeConfigDir}
-                            codexDir={settings.codexConfigDir}
+                            codexWindowsDir={settings.codexWindowsConfigDir}
+                            codexWslDir={settings.codexWslConfigDir}
                             geminiDir={settings.geminiConfigDir}
                             grokDir={settings.grokConfigDir}
                             opencodeDir={settings.opencodeConfigDir}

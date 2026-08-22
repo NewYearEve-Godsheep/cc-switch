@@ -793,6 +793,8 @@
     "piConfigDirDescription": "覆盖 Pi 配置目录（models.json、指令文件、提示词、Skills 与会话）。",
     "browsePlaceholderClaude": "例如：/home/<你的用户名>/.claude",
     "browsePlaceholderCodex": "例如：/home/<你的用户名>/.codex",
+    "codexWindowsConfigDir": "Codex Windows 配置目录",
+    "codexWslConfigDir": "Codex WSL 配置目录",
     "browsePlaceholderGemini": "例如：/home/<你的用户名>/.gemini",
     "browsePlaceholderGrok": "例如：/home/<你的用户名>/.grok",
     "browsePlaceholderOpencode": "例如：/home/<你的用户名>/.config/opencode",

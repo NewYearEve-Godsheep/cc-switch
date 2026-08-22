@@ -1493,6 +1493,13 @@ fn sync_current_provider_for_app_respecting_takeover(
     if has_live_backup || live_taken_over {
         if matches!(app_type, AppType::ClaudeDesktop) {
             write_live_with_common_config_for_state(state, app_type, provider)?;
+        } else if matches!(app_type, AppType::Codex) {
+            futures::executor::block_on(
+                state
+                    .proxy_service
+                    .update_codex_live_backup_from_provider_for_targets(provider),
+            )
+            .map_err(|e| AppError::Message(format!("更新 Codex Live 备份失败: {e}")))?;
         } else {
             futures::executor::block_on(
                 state

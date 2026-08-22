@@ -39,6 +39,18 @@ export const settingsApi = {
     return await invoke("save_settings", { settings });
   },
 
+  async setCodexActiveTarget(target: "windows" | "wsl"): Promise<boolean> {
+    return await invoke("set_codex_active_target", { target });
+  },
+
+  async getCodexTargetInfo(): Promise<{
+    activeTarget: "windows" | "wsl";
+    windowsConfigDir: string;
+    wslConfigDir: string;
+  }> {
+    return await invoke("get_codex_target_info");
+  },
+
   /** 是否存在统一 Codex 会话历史的迁移备份（关闭弹窗据此显示"恢复备份"勾选） */
   async hasCodexUnifyHistoryBackup(): Promise<boolean> {
     return await invoke("has_codex_unify_history_backup");

@@ -407,6 +407,12 @@ export interface Settings {
   claudeConfigDir?: string;
   // 覆盖 Codex 配置目录（可选）
   codexConfigDir?: string;
+  // Windows Codex configuration directory (optional)
+  codexWindowsConfigDir?: string;
+  // WSL Codex configuration directory (optional)
+  codexWslConfigDir?: string;
+  // Active Codex target
+  codexActiveTarget?: "windows" | "wsl";
   // 覆盖 Gemini 配置目录（可选）
   geminiConfigDir?: string;
   // 覆盖 Grok Build 配置目录（可选）
@@ -427,6 +433,13 @@ export interface Settings {
   currentProviderClaudeDesktop?: string;
   // 当前 Codex 供应商 ID（优先于数据库 is_current）
   currentProviderCodex?: string;
+  // Windows Codex target provider ID
+  currentProviderCodexWindows?: string;
+  // WSL Codex target provider ID
+  currentProviderCodexWsl?: string;
+  // Provider selections saved while local routing owns both Codex targets
+  codexProxyWindowsProvider?: string;
+  codexProxyWslProvider?: string;
   // 当前 Gemini 供应商 ID（优先于数据库 is_current）
   currentProviderGemini?: string;
 

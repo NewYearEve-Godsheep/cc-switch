@@ -5,10 +5,15 @@ import { homeDir, join } from "@tauri-apps/api/path";
 import { settingsApi, type AppId } from "@/lib/api";
 import type { SettingsFormState } from "./useSettingsForm";
 
-export type DirectoryAppId = Exclude<AppId, "claude-desktop">;
+export type DirectoryAppId =
+  | Exclude<AppId, "claude-desktop">
+  | "codex-windows"
+  | "codex-wsl";
 type AppDirectoryKey =
   | "claude"
   | "codex"
+  | "codexWindows"
+  | "codexWsl"
   | "gemini"
   | "grokbuild"
   | "opencode"
@@ -21,6 +26,8 @@ export interface ResolvedDirectories {
   appConfig: string;
   claude: string;
   codex: string;
+  codexWindows: string;
+  codexWsl: string;
   gemini: string;
   grokbuild: string;
   opencode: string;
@@ -36,6 +43,8 @@ const APP_DIRECTORY_META: Record<
 > = {
   claude: { key: "claude", defaultFolder: ".claude" },
   codex: { key: "codex", defaultFolder: ".codex" },
+  "codex-windows": { key: "codexWindows", defaultFolder: ".codex" },
+  "codex-wsl": { key: "codexWsl", defaultFolder: ".codex" },
   gemini: { key: "gemini", defaultFolder: ".gemini" },
   grokbuild: { key: "grokbuild", defaultFolder: ".grok" },
   opencode: { key: "opencode", defaultFolder: ".config/opencode" },
@@ -50,6 +59,8 @@ const DIRECTORY_KEY_TO_SETTINGS_FIELD: Record<
 > = {
   claude: "claudeConfigDir",
   codex: "codexConfigDir",
+  codexWindows: "codexWindowsConfigDir",
+  codexWsl: "codexWslConfigDir",
   gemini: "geminiConfigDir",
   grokbuild: "grokConfigDir",
   opencode: "opencodeConfigDir",
@@ -80,6 +91,7 @@ const computeDefaultAppConfigDir = async (): Promise<string | undefined> => {
 const computeDefaultConfigDir = async (
   app: DirectoryAppId,
 ): Promise<string | undefined> => {
+  if (app === "codex-wsl") return undefined;
   try {
     const home = await homeDir();
     return await join(home, APP_DIRECTORY_META[app].defaultFolder);
@@ -137,6 +149,8 @@ export function useDirectorySettings({
     appConfig: "",
     claude: "",
     codex: "",
+    codexWindows: "",
+    codexWsl: "",
     gemini: "",
     grokbuild: "",
     opencode: "",
@@ -150,6 +164,8 @@ export function useDirectorySettings({
     appConfig: "",
     claude: "",
     codex: "",
+    codexWindows: "",
+    codexWsl: "",
     gemini: "",
     grokbuild: "",
     opencode: "",
@@ -214,6 +230,8 @@ export function useDirectorySettings({
           appConfig: defaultAppConfig ?? "",
           claude: defaultClaudeDir ?? "",
           codex: defaultCodexDir ?? "",
+          codexWindows: defaultCodexDir ?? "",
+          codexWsl: "",
           gemini: defaultGeminiDir ?? "",
           grokbuild: defaultGrokDir ?? "",
           opencode: defaultOpencodeDir ?? "",
@@ -229,6 +247,12 @@ export function useDirectorySettings({
           appConfig: normalizedOverride ?? defaultsRef.current.appConfig,
           claude: claudeDir || defaultsRef.current.claude,
           codex: codexDir || defaultsRef.current.codex,
+          codexWindows:
+            settings?.codexWindowsConfigDir ||
+            (settings?.codexWslConfigDir
+              ? defaultsRef.current.codexWindows
+              : codexDir || defaultsRef.current.codex),
+          codexWsl: settings?.codexWslConfigDir || "",
           gemini: geminiDir || defaultsRef.current.gemini,
           grokbuild: grokDir || defaultsRef.current.grokbuild,
           opencode: opencodeDir || defaultsRef.current.opencode,
@@ -372,6 +396,9 @@ export function useDirectorySettings({
           initialAppConfigDirRef.current ?? defaultsRef.current.appConfig,
         claude: overrides?.claude ?? defaultsRef.current.claude,
         codex: overrides?.codex ?? defaultsRef.current.codex,
+        codexWindows:
+          overrides?.codexWindows ?? defaultsRef.current.codexWindows,
+        codexWsl: overrides?.codexWsl ?? defaultsRef.current.codexWsl,
         gemini: overrides?.gemini ?? defaultsRef.current.gemini,
         grokbuild: overrides?.grokbuild ?? defaultsRef.current.grokbuild,
         opencode: overrides?.opencode ?? defaultsRef.current.opencode,

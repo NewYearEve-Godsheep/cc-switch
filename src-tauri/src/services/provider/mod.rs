@@ -89,12 +89,29 @@ pub fn reapply_current_codex_official_live(state: &AppState) -> Result<bool, App
         .proxy_service
         .detect_takeover_in_live_config_for_app(&AppType::Codex);
     if has_live_backup || live_taken_over {
-        futures::executor::block_on(
-            state
-                .proxy_service
-                .update_live_backup_from_provider(AppType::Codex.as_str(), provider),
-        )
-        .map_err(|e| AppError::Message(format!("更新 Live 备份失败: {e}")))?;
+        let original_target = crate::settings::codex_active_target();
+        let mut targets = vec![crate::settings::CODEX_TARGET_WINDOWS.to_string()];
+        if crate::settings::get_codex_target_override_dir(crate::settings::CODEX_TARGET_WSL)
+            .is_some()
+        {
+            targets.push(crate::settings::CODEX_TARGET_WSL.to_string());
+        }
+        let result = (|| {
+            for target in targets {
+                crate::settings::set_codex_active_target(&target)?;
+                futures::executor::block_on(
+                    state
+                        .proxy_service
+                        .update_live_backup_from_provider(AppType::Codex.as_str(), provider),
+                )
+                .map_err(|e| {
+                    AppError::Message(format!("更新 Codex/{target} Live 备份失败: {e}"))
+                })?;
+            }
+            Ok::<(), AppError>(())
+        })();
+        crate::settings::set_codex_active_target(&original_target)?;
+        result?;
         return Ok(true);
     }
 
@@ -4647,26 +4664,58 @@ impl ProviderService {
                     outgoing_managed_codex_account_id.as_deref(),
                     outgoing_live_refresh_token.as_deref(),
                 )?;
-                futures::executor::block_on(
-                    state.proxy_service.update_live_backup_from_provider_inner(
-                        app_type.as_str(),
-                        &provider,
-                        outgoing_managed_codex_account_id.as_deref(),
-                    ),
-                )
-                .map_err(|error| AppError::Message(format!("更新 Live 备份失败: {error}")))?;
-
-                if live_taken_over {
+                if matches!(app_type, AppType::Codex)
+                    && crate::settings::get_codex_target_override_dir(
+                        crate::settings::CODEX_TARGET_WSL,
+                    )
+                    .is_some()
+                {
                     futures::executor::block_on(
                         state
                             .proxy_service
-                            .sync_codex_live_from_provider_while_proxy_active_guarded(
+                            .update_codex_live_backup_from_provider_for_targets_inner(
                                 &provider,
                                 outgoing_managed_codex_account_id.as_deref(),
-                                outgoing_live_refresh_token.as_deref(),
                             ),
                     )
-                    .map_err(|error| {
+                } else {
+                    futures::executor::block_on(
+                        state.proxy_service.update_live_backup_from_provider_inner(
+                            app_type.as_str(),
+                            &provider,
+                            outgoing_managed_codex_account_id.as_deref(),
+                        ),
+                    )
+                }
+                .map_err(|error| AppError::Message(format!("更新 Live 备份失败: {error}")))?;
+
+                if live_taken_over {
+                    let sync_result = if crate::settings::get_codex_target_override_dir(
+                        crate::settings::CODEX_TARGET_WSL,
+                    )
+                    .is_some()
+                    {
+                        futures::executor::block_on(
+                            state
+                                .proxy_service
+                                .sync_codex_live_from_provider_while_proxy_active_for_targets_guarded(
+                                    &provider,
+                                    outgoing_managed_codex_account_id.as_deref(),
+                                    outgoing_live_refresh_token.as_deref(),
+                                ),
+                        )
+                    } else {
+                        futures::executor::block_on(
+                            state
+                                .proxy_service
+                                .sync_codex_live_from_provider_while_proxy_active_guarded(
+                                    &provider,
+                                    outgoing_managed_codex_account_id.as_deref(),
+                                    outgoing_live_refresh_token.as_deref(),
+                                ),
+                        )
+                    };
+                    sync_result.map_err(|error| {
                         AppError::Message(format!("同步 Codex Live 配置失败: {error}"))
                     })?;
                 } else {
@@ -4735,11 +4784,21 @@ impl ProviderService {
                 if matches!(app_type, AppType::ClaudeDesktop) {
                     write_live_with_common_config_for_state(state, &app_type, &provider)?;
                 } else {
-                    let update_backup_result = futures::executor::block_on(
-                        state
-                            .proxy_service
-                            .update_live_backup_from_provider(app_type.as_str(), &provider),
-                    );
+                    let update_backup_result = if matches!(app_type, AppType::Codex) {
+                        futures::executor::block_on(
+                            state
+                                .proxy_service
+                                .update_codex_live_backup_from_provider_for_targets_inner(
+                                    &provider, None,
+                                ),
+                        )
+                    } else {
+                        futures::executor::block_on(
+                            state
+                                .proxy_service
+                                .update_live_backup_from_provider(app_type.as_str(), &provider),
+                        )
+                    };
                     update_backup_result
                         .map_err(|e| AppError::Message(format!("更新 Live 备份失败: {e}")))?;
                 }
@@ -4762,7 +4821,9 @@ impl ProviderService {
                         futures::executor::block_on(
                             state
                                 .proxy_service
-                                .sync_codex_live_from_provider_while_proxy_active(&provider),
+                                .sync_codex_live_from_provider_while_proxy_active_for_targets(
+                                    &provider,
+                                ),
                         )
                         .map_err(|e| AppError::Message(format!("同步 Codex Live 配置失败: {e}")))?;
                     }
@@ -5016,12 +5077,24 @@ impl ProviderService {
                 id
             );
 
-            futures::executor::block_on(
-                state
-                    .proxy_service
-                    .hot_switch_provider_inner(app_type.as_str(), id),
-            )
-            .map_err(|e| AppError::Message(format!("热切换失败: {e}")))?;
+            if matches!(app_type, AppType::Codex)
+                && crate::settings::get_codex_target_override_dir(crate::settings::CODEX_TARGET_WSL)
+                    .is_some()
+            {
+                futures::executor::block_on(
+                    state
+                        .proxy_service
+                        .hot_switch_codex_provider_for_targets(id),
+                )
+                .map_err(|e| AppError::Message(format!("热切换失败: {e}")))?;
+            } else {
+                futures::executor::block_on(
+                    state
+                        .proxy_service
+                        .hot_switch_provider_inner(app_type.as_str(), id),
+                )
+                .map_err(|e| AppError::Message(format!("热切换失败: {e}")))?;
+            }
 
             // The proxy server will route requests to the new provider via is_current.
             // MCP sync is intentionally skipped while Live config is owned by takeover.
@@ -5330,12 +5403,21 @@ impl ProviderService {
                 return Ok(());
             }
 
-            futures::executor::block_on(
-                state
-                    .proxy_service
-                    .update_live_backup_from_provider(app_type.as_str(), provider),
-            )
-            .map_err(|e| AppError::Message(format!("更新 Live 备份失败: {e}")))?;
+            if matches!(app_type, AppType::Codex) {
+                futures::executor::block_on(
+                    state
+                        .proxy_service
+                        .update_codex_live_backup_from_provider_for_targets_inner(provider, None),
+                )
+                .map_err(|e| AppError::Message(format!("更新 Codex Live 备份失败: {e}")))?;
+            } else {
+                futures::executor::block_on(
+                    state
+                        .proxy_service
+                        .update_live_backup_from_provider(app_type.as_str(), provider),
+                )
+                .map_err(|e| AppError::Message(format!("更新 Live 备份失败: {e}")))?;
+            }
             return Ok(());
         }
 

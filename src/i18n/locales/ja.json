@@ -793,6 +793,8 @@
     "piConfigDirDescription": "Pi の設定ディレクトリ（models.json、指示ファイル、プロンプト、Skills、セッション）を上書きします。",
     "browsePlaceholderClaude": "例: /home/<your-username>/.claude",
     "browsePlaceholderCodex": "例: /home/<your-username>/.codex",
+    "codexWindowsConfigDir": "Codex Windows 設定ディレクトリ",
+    "codexWslConfigDir": "Codex WSL 設定ディレクトリ",
     "browsePlaceholderGemini": "例: /home/<your-username>/.gemini",
     "browsePlaceholderGrok": "例: /home/<your-username>/.grok",
     "browsePlaceholderOpencode": "例: /home/<your-username>/.config/opencode",

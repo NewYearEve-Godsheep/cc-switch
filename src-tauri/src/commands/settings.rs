@@ -57,6 +57,72 @@ pub async fn get_settings() -> Result<crate::settings::AppSettings, String> {
     Ok(crate::settings::get_settings_for_frontend())
 }
 
+/// Switch the active Codex target. All existing Codex provider/config/session
+/// operations resolve their paths from this target, so switching is atomic at
+/// the settings layer and does not require a second provider database.
+#[tauri::command]
+pub async fn set_codex_active_target(
+    state: tauri::State<'_, crate::store::AppState>,
+    target: String,
+) -> Result<bool, String> {
+    crate::settings::set_codex_active_target(&target).map_err(|e| e.to_string())?;
+    let proxy_active = state
+        .db
+        .get_proxy_config_for_app("codex")
+        .await
+        .map(|config| config.enabled)
+        .unwrap_or(false)
+        || state
+            .proxy_service
+            .detect_takeover_in_live_config_for_app(&crate::app_config::AppType::Codex);
+    if proxy_active {
+        // Both target roots were projected when takeover was enabled. Do not
+        // run a normal provider switch here: that would rewrite only the newly
+        // selected root and could desynchronise the other routed client.
+        return Ok(true);
+    }
+    // Materialize the target's remembered provider into its newly active live
+    // directory. On first use, the database current provider is used as the
+    // migration fallback and then persisted to the target-specific slot.
+    if let Some(provider_id) = crate::settings::get_effective_current_provider(
+        &state.db,
+        &crate::app_config::AppType::Codex,
+    )
+    .map_err(|e| e.to_string())?
+    {
+        crate::services::ProviderService::switch(
+            state.inner(),
+            crate::app_config::AppType::Codex,
+            &provider_id,
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(true)
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexTargetInfo {
+    pub active_target: String,
+    pub windows_config_dir: String,
+    pub wsl_config_dir: String,
+}
+
+#[tauri::command]
+pub async fn get_codex_target_info() -> Result<CodexTargetInfo, String> {
+    let settings = crate::settings::get_settings();
+    let fallback = crate::codex_config::get_codex_config_dir()
+        .to_string_lossy()
+        .to_string();
+    Ok(CodexTargetInfo {
+        active_target: crate::settings::codex_active_target(),
+        windows_config_dir: settings
+            .codex_windows_config_dir
+            .unwrap_or_else(|| fallback.clone()),
+        wsl_config_dir: settings.codex_wsl_config_dir.unwrap_or_default(),
+    })
+}
+
 /// 保存设置
 #[tauri::command]
 pub async fn save_settings(
