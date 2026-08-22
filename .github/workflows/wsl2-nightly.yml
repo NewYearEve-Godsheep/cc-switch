@@ -68,15 +68,22 @@ jobs:
           $env:TEMP = $env:CC_SWITCH_WSL_TEST_TEMP
           $env:TMP = $env:CC_SWITCH_WSL_TEST_TEMP
           $testName = "config::tests::atomic_write_replaces_existing_wsl_unc_file"
-          $testList = cargo test --tests --manifest-path src-tauri/Cargo.toml -- --ignored --list
-          if ($LASTEXITCODE -ne 0) {
-            exit $LASTEXITCODE
+          # The test binary was compiled while TEMP pointed at a native path.
+          # Running it directly prevents Cargo/rustc from recompiling after
+          # TEMP is switched to a WSL UNC path, which the MSVC linker cannot
+          # use for its intermediate manifest files.
+          $testBinary = Get-ChildItem "src-tauri/target/debug/deps/cc_switch_lib-*.exe" |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 1
+          if ($null -eq $testBinary) {
+            throw "Compiled cc_switch_lib test binary not found"
           }
+          $testList = & $testBinary.FullName --ignored --list
           $expected = "${testName}: test"
           if ($testList -notcontains $expected) {
             throw "Expected ignored test was not discovered: $testName"
           }
-          cargo test --tests --manifest-path src-tauri/Cargo.toml $testName -- --ignored --exact --nocapture
+          & $testBinary.FullName $testName --ignored --exact --nocapture
           if ($LASTEXITCODE -ne 0) {
             exit $LASTEXITCODE
           }
