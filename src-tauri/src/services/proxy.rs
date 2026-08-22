@@ -2288,6 +2288,23 @@ impl ProxyService {
 
     async fn takeover_codex_live_targets(&self) -> Result<(), String> {
         let original_target = crate::settings::codex_active_target();
+        // A proxy takeover can be started when Codex is not installed or has
+        // no live config yet (for example, a Claude-only setup). Probe the
+        // configured roots first and only require a Codex provider if at least
+        // one root actually has a readable Live config.
+        let mut live_targets = Vec::new();
+        for target in self.codex_targets().await {
+            crate::settings::set_codex_active_target(&target).map_err(|e| e.to_string())?;
+            if self.read_codex_live().is_ok() {
+                live_targets.push(target);
+            }
+        }
+        crate::settings::set_codex_active_target(&original_target).map_err(|e| e.to_string())?;
+
+        if live_targets.is_empty() {
+            return Ok(());
+        }
+
         let provider_id = crate::settings::get_effective_current_provider_for_codex_target(
             &self.db,
             &original_target,
@@ -2300,7 +2317,7 @@ impl ProxyService {
             .map_err(|e| format!("读取 Codex 供应商失败: {e}"))?
             .ok_or_else(|| format!("Codex 供应商不存在: {provider_id}"))?;
         let result = async {
-            for target in self.codex_targets().await {
+            for target in live_targets {
                 crate::settings::set_codex_active_target(&target).map_err(|e| e.to_string())?;
                 if crate::settings::get_codex_proxy_provider(&target).is_none() {
                     let previous = crate::settings::get_current_provider_for_codex_target(&target);
